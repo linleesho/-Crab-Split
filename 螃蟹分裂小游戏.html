@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小螃蟹大作战</title>
+<style>
+* {
+  box-sizing: border-box;
+  user-select: none;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: "Microsoft YaHei", sans-serif;
+  background: linear-gradient(#8ee8ff, #ffe2a0);
+}
+
+canvas {
+  display: block;
+  background: linear-gradient(#83e6ff 0%, #dffaff 58%, #ffe2a0 58%, #ffc76b 100%);
+}
+
+.ui {
+  position: fixed;
+  left: 16px;
+  top: 16px;
+  z-index: 10;
+  padding: 12px 18px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.75);
+  color: #6b3e22;
+  font-weight: bold;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+}
+
+.ui div {
+  margin: 4px 0;
+}
+
+.panel-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 245, 210, 0.82);
+}
+
+.panel {
+  width: min(420px, 90vw);
+  padding: 28px;
+  text-align: center;
+  border-radius: 28px;
+  background: #fffaf0;
+  border: 4px solid #ffb56b;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+}
+
+.panel h1 {
+  margin: 0 0 12px;
+  color: #ff6b5f;
+}
+
+.panel p {
+  color: #7a5434;
+  line-height: 1.7;
+}
+
+button {
+  margin-top: 14px;
+  border: none;
+  padding: 13px 28px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 18px;
+  color: white;
+  font-weight: bold;
+  background: linear-gradient(135deg, #ff7f50, #ffc83d);
+  box-shadow: 0 6px 0 #d36a35;
+}
+
+button:active {
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 #d36a35;
+}
+
+#gameOverPanel {
+  display: none;
+}
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<div class="ui">
+  <div>得分：<span id="scoreText">0</span></div>
+  <div>最高分：<span id="bestText">0</span></div>
+  <div>螃蟹数量：<span id="countText">0</span>/64</div>
+</div>
+
+<div id="startPanel" class="panel-wrap">
+  <div class="panel">
+    <h1>小螃蟹大作战 🦀</h1>
+    <p>
+      初始有 5 只小螃蟹。<br>
+      每只螃蟹每 2 秒会分裂成两只。<br>
+      点击螃蟹可消除，并获得 1 分。<br>
+      螃蟹数量超过 64 只时游戏结束。<br>
+      清空所有螃蟹直接胜利！
+    </p>
+    <button id="startBtn">开始游戏</button>
+  </div>
+</div>
+
+<div id="gameOverPanel" class="panel-wrap">
+  <div class="panel">
+    <h1>游戏结束</h1>
+    <p>
+      最终得分：<strong id="finalScore">0</strong><br>
+      历史最高分：<strong id="finalBest">0</strong>
+    </p>
+    <button id="restartBtn">再玩一次</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+const scoreText = document.getElementById("scoreText");
+const bestText = document.getElementById("bestText");
+const countText = document.getElementById("countText");
+
+const startPanel = document.getElementById("startPanel");
+const gameOverPanel = document.getElementById("gameOverPanel");
+const startBtn = document.getElementById("startBtn");
+const restartBtn = document.getElementById("restartBtn");
+
+const finalScore = document.getElementById("finalScore");
+const finalBest = document.getElementById("finalBest");
+
+let crabs = [];
+let particles = [];
+let score = 0;
+let running = false;
+let lastTime = 0;
+let audioCtx = null;
+
+let bestScore = Number(localStorage.getItem("crabBestScore") || 0);
+bestText.textContent = bestScore;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener("resize", resize);
+
+function random(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+}
+
+function playSound(freq, duration, type = "sine", volume = 0.06) {
+  if (!audioCtx) return;
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+
+  osc.type = type;
+  osc.frequency.value = freq;
+
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+function clickSound() {
+  playSound(700, 0.08, "triangle", 0.08);
+  setTimeout(() => playSound(900, 0.05, "triangle", 0.06), 40);
+}
+
+function splitSound() {
+  playSound(430, 0.08, "sine", 0.035);
+}
+
+function gameOverSound() {
+  playSound(260, 0.18, "sawtooth", 0.08);
+  setTimeout(() => playSound(180, 0.22, "sawtooth", 0.07), 140);
+}
+
+function winSound() {
+  playSound(520, 0.1, "sine", 0.07);
+  setTimeout(() => playSound(650, 0.1, "sine", 0.07), 100);
+  setTimeout(() => playSound(780, 0.15, "sine", 0.07), 200);
+}
+
+class Crab {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.r = random(18, 25);
+
+    const speed = random(45, 80);
+    const angle = random(0, Math.PI * 2);
+
+    this.vx = Math.cos(angle) * speed;
+    this.vy = Math.sin(angle) * speed;
+
+    this.splitTimer = 0;
+    this.scale = 0;
+    this.phase = random(0, Math.PI * 2);
+    this.color = ["#ff7a59", "#ff8f70", "#ff6b6b", "#ffa06c"][Math.floor(random(0, 4))];
+  }
+
+  update(dt) {
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+    this.splitTimer += dt;
+    this.phase += dt * 5;
+
+    if (this.scale < 1) {
+      this.scale += dt * 5;
+      if (this.scale > 1) this.scale = 1;
+    }
+
+    const top = 80;
+    const bottom = canvas.height - 35;
+
+    if (this.x < this.r + 5) {
+      this.x = this.r + 5;
+      this.vx *= -1;
+    }
+
+    if (this.x > canvas.width - this.r - 5) {
+      this.x = canvas.width - this.r - 5;
+      this.vx *= -1;
+    }
+
+    if (this.y < top + this.r) {
+      this.y = top + this.r;
+      this.vy *= -1;
+    }
+
+    if (this.y > bottom - this.r) {
+      this.y = bottom - this.r;
+      this.vy *= -1;
+    }
+  }
+
+  contains(px, py) {
+    const dx = px - this.x;
+    const dy = py - this.y;
+    return Math.sqrt(dx * dx + dy * dy) < this.r * 1.5;
+  }
+
+  draw() {
+    const r = this.r;
+    const bob = Math.sin(this.phase) * 3;
+
+    ctx.save();
+    ctx.translate(this.x, this.y + bob);
+    ctx.scale(this.scale, this.scale);
+
+    // 影子
+    ctx.beginPath();
+    ctx.ellipse(0, r * 1.1, r * 1.3, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(80,50,30,0.18)";
+    ctx.fill();
+
+    // 腿
+    ctx.strokeStyle = "#d84a3a";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+
+    for (let i = -1; i <= 1; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.55, i * r * 0.25);
+      ctx.lineTo(-r * 1.15, i * r * 0.45);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(r * 0.55, i * r * 0.25);
+      ctx.lineTo(r * 1.15, i * r * 0.45);
+      ctx.stroke();
+    }
+
+    // 钳子
+    drawClaw(-r * 1.05, -r * 0.25, -1, r);
+    drawClaw(r * 1.05, -r * 0.25, 1, r);
+
+    // 身体
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 1.05, r * 0.82, 0, 0, Math.PI * 2);
+    ctx.fillStyle = this.color;
+    ctx.fill();
+    ctx.strokeStyle = "#d84a3a";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    // 眼睛
+    drawEye(-r * 0.35, -r * 0.65, r);
+    drawEye(r * 0.35, -r * 0.65, r);
+
+    // 嘴巴
+    ctx.beginPath();
+    ctx.arc(0, r * 0.05, r * 0.25, 0, Math.PI);
+    ctx.strokeStyle = "#7a2c22";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 腮红
+    ctx.beginPath();
+    ctx.arc(-r * 0.5, r * 0.16, r * 0.13, 0, Math.PI * 2);
+    ctx.arc(r * 0.5, r * 0.16, r * 0.13, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,180,180,0.75)";
+    ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+function drawEye(x, y, r) {
+  ctx.beginPath();
+  ctx.arc(x, y, r * 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = "white";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y + 1, r * 0.09, 0, Math.PI * 2);
+  ctx.fillStyle = "#222";
+  ctx.fill();
+}
+
+function drawClaw(x, y, dir, r) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = "#ff7a59";
+  ctx.fill();
+  ctx.strokeStyle = "#d84a3a";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(dir * r * 0.04, -r * 0.05);
+  ctx.lineTo(dir * r * 0.34, -r * 0.25);
+  ctx.lineTo(dir * r * 0.18, r * 0.03);
+  ctx.closePath();
+  ctx.fillStyle = "#ff9a78";
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function addParticles(x, y) {
+  for (let i = 0; i < 12; i++) {
+    particles.push({
+      x,
+      y,
+      vx: random(-130, 130),
+      vy: random(-130, 130),
+      life: 0.45,
+      maxLife: 0.45,
+      size: random(3, 7)
+    });
+  }
+}
+
+function updateParticles(dt) {
+  particles.forEach(p => {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+  });
+
+  particles = particles.filter(p => p.life > 0);
+}
+
+function drawParticles() {
+  particles.forEach(p => {
+    ctx.globalAlpha = p.life / p.maxLife;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff176";
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+}
+
+function createCrab(x, y) {
+  const margin = 60;
+
+  if (x === undefined) {
+    x = random(margin, canvas.width - margin);
+  }
+
+  if (y === undefined) {
+    y = random(100, canvas.height - margin);
+  }
+
+  crabs.push(new Crab(x, y));
+}
+
+function startGame() {
+  initAudio();
+
+  crabs = [];
+  particles = [];
+  score = 0;
+  running = true;
+  lastTime = performance.now();
+
+  for (let i = 0; i < 5; i++) {
+    createCrab();
+  }
+
+  startPanel.style.display = "none";
+  gameOverPanel.style.display = "none";
+  updateUI();
+
+  requestAnimationFrame(gameLoop);
+}
+
+function endGame() {
+  running = false;
+  gameOverSound();
+  document.querySelector("#gameOverPanel h1").textContent = "游戏结束";
+
+  if (score > bestScore) {
+    bestScore = score;
+    localStorage.setItem("crabBestScore", bestScore);
+  }
+
+  finalScore.textContent = score;
+  finalBest.textContent = bestScore;
+  bestText.textContent = bestScore;
+
+  gameOverPanel.style.display = "flex";
+}
+
+function winGame() {
+  if (!running) return;
+  running = false;
+  winSound();
+
+  score = 999;
+  scoreText.textContent = score;
+  finalScore.textContent = score;
+
+  if (score > bestScore) {
+    bestScore = score;
+    localStorage.setItem("crabBestScore", bestScore);
+    bestText.textContent = bestScore;
+  }
+  finalBest.textContent = bestScore;
+
+  document.querySelector("#gameOverPanel h1").textContent = "🎉 游戏胜利";
+  alert("太棒了，你就是螃蟹达人，游戏胜利");
+  gameOverPanel.style.display = "flex";
+}
+
+function updateUI() {
+  scoreText.textContent = score;
+  bestText.textContent = bestScore;
+  countText.textContent = crabs.length;
+}
+
+function gameLoop(now) {
+  if (!running) return;
+
+  const dt = Math.min((now - lastTime) / 1000, 0.033);
+  lastTime = now;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawBackground();
+
+  const newCrabs = [];
+
+  for (const crab of crabs) {
+    crab.update(dt);
+
+    if (crab.splitTimer >= 2) {
+      crab.splitTimer = 0;
+
+      const nx = crab.x + random(-30, 30);
+      const ny = crab.y + random(-30, 30);
+
+      newCrabs.push(new Crab(nx, ny));
+      splitSound();
+    }
+
+    crab.draw();
+  }
+
+  crabs.push(...newCrabs);
+
+  updateParticles(dt);
+  drawParticles();
+
+  updateUI();
+
+  // 失败判定
+  if (crabs.length > 64) {
+    endGame();
+    return;
+  }
+  // 胜利判定：清空所有螃蟹
+  if (crabs.length === 0) {
+    winGame();
+    return;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+function drawBackground() {
+  // 太阳
+  ctx.beginPath();
+  ctx.arc(canvas.width - 90, 80, 38, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffd95a";
+  ctx.fill();
+
+  // 云朵
+  drawCloud(100, 80);
+  drawCloud(270, 120);
+
+  // 海浪
+  ctx.strokeStyle = "rgba(255,255,255,0.8)";
+  ctx.lineWidth = 3;
+  for (let y = 170; y < canvas.height * 0.55; y += 45) {
+    ctx.beginPath();
+    for (let x = 0; x <= canvas.width; x += 30) {
+      ctx.lineTo(x, y + Math.sin(x * 0.03 + performance.now() * 0.002) * 5);
+    }
+    ctx.stroke();
+  }
+
+  // 沙滩点点
+  ctx.fillStyle = "rgba(160,100,40,0.18)";
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 97) % canvas.width;
+    const y = canvas.height * 0.6 + ((i * 53) % (canvas.height * 0.35));
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawCloud(x, y) {
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.beginPath();
+  ctx.arc(x, y, 22, 0, Math.PI * 2);
+  ctx.arc(x + 24, y - 8, 28, 0, Math.PI * 2);
+  ctx.arc(x + 52, y, 22, 0, Math.PI * 2);
+  ctx.fillRect(x, y - 5, 55, 22);
+  ctx.fill();
+}
+
+canvas.addEventListener("click", e => {
+  if (!running) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  for (let i = crabs.length - 1; i >= 0; i--) {
+    if (crabs[i].contains(x, y)) {
+      addParticles(crabs[i].x, crabs[i].y);
+      crabs.splice(i, 1);
+      score++;
+      clickSound();
+      updateUI();
+      break;
+    }
+  }
+});
+
+startBtn.addEventListener("click", startGame);
+restartBtn.addEventListener("click", startGame);
+</script>
+
+</body>
+</html>
